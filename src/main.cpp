@@ -14,7 +14,7 @@ static SystemMonitor* g_monitor = nullptr;
 static void signalHandler(int signum) {
     // write() является async-signal-safe в отличие от std::cout
     const char msg[] = "\nReceived signal, shutting down...\n";
-    write(STDOUT_FILENO, msg, sizeof(msg) - 1);
+    if (write(STDOUT_FILENO, msg, sizeof(msg) - 1) < 0) { /* async-signal-safe, ошибку игнорируем */ }
     (void)signum;
     if (g_monitor) {
         g_monitor->stop();
