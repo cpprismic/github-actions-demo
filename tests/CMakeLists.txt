@@ -7,15 +7,18 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(googletest)
 
 # Подключаем заголовочные файлы основного проекта
-include_directories(${CMAKE_SOURCE_DIR}/src)
+include_directories(
+    ${CMAKE_SOURCE_DIR}/src/core
+    ${CMAKE_SOURCE_DIR}/src/utils
+)
 
 # Создаем тестовый исполняемый файл
 add_executable(unit_tests
     test_system_monitor.cpp
     test_utils.cpp
     test_main.cpp
-    ${CMAKE_SOURCE_DIR}/src/system_monitor.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/system_monitor.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
 )
 
 # Линкуем с Google Test

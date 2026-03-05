@@ -32,12 +32,15 @@ endif()
 # Добавляем исходники
 add_executable(system_monitor
     src/main.cpp
-    src/system_monitor.cpp
-    src/utils.cpp
+    src/core/system_monitor.cpp
+    src/utils/utils.cpp
 )
 
 # Подключаем заголовочные файлы
-target_include_directories(system_monitor PRIVATE src)
+target_include_directories(system_monitor PRIVATE
+    src/core
+    src/utils
+)
 
 # Компиляция с предупреждениями
 if(MSVC)
