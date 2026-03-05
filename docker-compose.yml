@@ -1,38 +1,5 @@
-# version: '3.8'
-
-# services:
-#   system-monitor:
-#     build: .
-#     container_name: system-monitor
-#     restart: unless-stopped
-#     # Для доступа к системной информации хоста
-#     volumes:
-#       - /proc:/host/proc:ro
-#       - /sys:/host/sys:ro
-#       - /etc:/host/etc:ro
-#     environment:
-#       - TZ=Europe/Moscow
-#     # Запускаем в непрерывном режиме с интервалом 5 секунд
-#     command: ["-c", "5"]
-#     # Ограничения ресурсов
-#     deploy:
-#       resources:
-#         limits:
-#           cpus: '0.5'
-#           memory: 256M
-#     # Логирование
-#     logging:
-#       driver: json-file
-#       options:
-#         max-size: "10m"
-#         max-file: "3"
-
-# docker-compose.yml
-version: '3.8'
-
 services:
   system-monitor:
-    # Убираем build, добавляем image
     image: ${DOCKER_IMAGE:-cpprismic/system-monitor}:${TAG:-latest}
     container_name: system-monitor
     restart: unless-stopped
@@ -48,6 +15,12 @@ services:
         limits:
           cpus: '0.5'
           memory: 256M
+    healthcheck:
+      test: ["/usr/local/bin/system_monitor"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
     logging:
       driver: json-file
       options:

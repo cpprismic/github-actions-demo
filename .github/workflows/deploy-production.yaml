@@ -13,7 +13,7 @@ env:
 
 concurrency:
   group: production-deployment
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   validate:
@@ -28,7 +28,6 @@ jobs:
             echo "Error: You must type 'DEPLOY' to confirm the deployment"
             exit 1
           fi
-          
           echo "Validation passed"
           echo "valid=true" >> $GITHUB_OUTPUT
 
@@ -45,50 +44,50 @@ jobs:
       - name: Get latest commit from main
         id: get-commit
         run: |
-          git clone --depth 1 https://github.com/${{ github.repository }}.git temp-repo
-          cd temp-repo
-          COMMIT=$(git rev-parse origin/main)
-          cd .. && rm -rf temp-repo
+          COMMIT=$(curl -s \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/commits/main" \
+            | jq -r '.sha')
           echo "commit=$COMMIT" >> $GITHUB_OUTPUT
           echo "Using latest main commit: $COMMIT"
-      
+
       - name: Check CI status for this commit
         run: |
           COMMIT="${{ steps.get-commit.outputs.commit }}"
           echo "Checking CI status for commit: $COMMIT"
-          
-          # Получаем все check runs для этого коммита
-          WORKFLOW_RUNS=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+
+          WORKFLOW_RUNS=$(curl -s \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/${{ github.repository }}/commits/$COMMIT/check-runs")
-          
-          # Проверяем статус каждой важной job
+
           BUILD_STATUS=$(echo "$WORKFLOW_RUNS" | jq -r '.check_runs[] | select(.name == "build") | .conclusion' | head -1)
-          TEST_STATUS=$(echo "$WORKFLOW_RUNS" | jq -r '.check_runs[] | select(.name == "test") | .conclusion' | head -1)
-          DOCKER_BUILD_STATUS=$(echo "$WORKFLOW_RUNS" | jq -r '.check_runs[] | select(.name == "docker-build") | .conclusion' | head -1)
-          
-          echo "Build job status: $BUILD_STATUS"
-          echo "Test job status: $TEST_STATUS"
-          echo "Docker build job status: $DOCKER_BUILD_STATUS"
-          
-          # Проверяем что все job завершились успешно
-          if [[ "$BUILD_STATUS" != "success" ]] || [[ "$TEST_STATUS" != "success" ]] || [[ "$DOCKER_BUILD_STATUS" != "success" ]]; then
-            echo "CI tests failed!"
-            echo "Available check runs:"
+          TEST_STATUS=$(echo "$WORKFLOW_RUNS"  | jq -r '.check_runs[] | select(.name == "test")  | .conclusion' | head -1)
+          DOCKER_STATUS=$(echo "$WORKFLOW_RUNS" | jq -r '.check_runs[] | select(.name == "docker") | .conclusion' | head -1)
+
+          echo "Build status:  $BUILD_STATUS"
+          echo "Test status:   $TEST_STATUS"
+          echo "Docker status: $DOCKER_STATUS"
+
+          if [[ "$BUILD_STATUS" != "success" ]] || \
+             [[ "$TEST_STATUS"  != "success" ]] || \
+             [[ "$DOCKER_STATUS" != "success" ]]; then
+            echo "CI checks failed! Available check runs:"
             echo "$WORKFLOW_RUNS" | jq -r '.check_runs[] | "\(.name): \(.conclusion)"'
             exit 1
           fi
-          
-          echo "CI tests passed for commit $COMMIT"
+
+          echo "All CI checks passed for commit $COMMIT"
 
   deploy:
     needs: [validate, check-ci-status]
     runs-on: ubuntu-latest
-    environment: 
+    environment:
       name: production
     permissions:
       contents: read
       deployments: write
-    
+
     steps:
     - name: Notify about deployment start
       run: |
@@ -96,86 +95,8 @@ jobs:
         echo "Version: ${{ needs.check-ci-status.outputs.commit }}"
         echo "Deployed by: ${{ github.actor }}"
         echo "Time: $(date)"
-  
+
     - name: Deploy to Production VPS
-      uses: appleboy/ssh-action@v1.0.3
-      with:
-        host: ${{ secrets.VPS_HOST_PROD }}
-        username: ${{ secrets.VPS_USERNAME_PROD }}  # root
-        password: ${{ secrets.VPS_PASSWORD_PROD }}  # пароль вместо ключа
-        script: |
-          set -e  # Exit on error
-          
-          echo "PRODUCTION DEPLOYMENT (using password)"
-          echo "Version: ${{ needs.check-ci-status.outputs.commit }}"
-          echo "Current user: $(whoami)"
-          echo "Current directory: $(pwd)"
-          
-          # Создаем backup директорию
-          BACKUP_DIR=~/system-monitor-backups/$(date +%Y%m%d_%H%M%S)
-          mkdir -p $BACKUP_DIR
-          echo "Backup directory created: $BACKUP_DIR"
-          
-          cd ~/system-monitor || mkdir -p ~/system-monitor && cd ~/system-monitor
-          echo "Working directory: $(pwd)"
-          
-          # Backup текущей конфигурации если есть
-          if [ -f docker-compose.yml ]; then
-            cp docker-compose.yml $BACKUP_DIR/
-            echo "Configuration backed up"
-          fi
-          
-          # Скачиваем актуальный docker-compose
-          echo "Downloading docker-compose.yml..."
-          curl -o docker-compose.yml \
-            https://raw.githubusercontent.com/${{ github.repository }}/main/docker-compose.yml
-          
-          # Логинимся в Docker Hub
-          echo ${{ secrets.DOCKER_PASSWORD }} | docker login -u ${{ secrets.DOCKER_USERNAME }} --password-stdin
-          
-          # Останавливаем старый контейнер
-          docker-compose down || true
-
-          # export TAG=${{ steps.set-commit.outputs.commit }}
-          
-          # Обновляем образ
-          export TAG=${{ needs.check-ci-status.outputs.commit }}
-          export DOCKER_IMAGE=${{ secrets.DOCKER_USERNAME }}/system-monitor
-          echo "Pulling image with tag: $TAG"
-          docker-compose pull
-
-          echo "Starting container..."
-          docker-compose up -d
-          
-          # Очистка старых образов
-          docker image prune -f
-          
-          echo "PRODUCTION DEPLOYMENT COMPLETE!"
-          
-          # Сохраняем информацию о деплое
-          cat > $BACKUP_DIR/deploy-info.txt << EOF
-          Version: ${{ needs.check-ci-status.outputs.commit }}
-          Deployed by: ${{ github.actor }}
-          Date: $(date)
-          Workflow: ${{ github.run_id }}
-          Method: password
-          EOF
-
-  health-check:
-    needs: deploy
-    runs-on: ubuntu-latest
-    environment: 
-      name: production
-    permissions:
-      contents: read
-      deployments: write
-    outputs:
-      status: ${{ steps.health-check-status.outputs.status }}
-    
-    steps:
-    - name: Health Check
-      id: health-check
-      continue-on-error: false
       uses: appleboy/ssh-action@v1.0.3
       with:
         host: ${{ secrets.VPS_HOST_PROD }}
@@ -183,13 +104,76 @@ jobs:
         password: ${{ secrets.VPS_PASSWORD_PROD }}
         script: |
           set -e
-          
+
+          echo "=== PRODUCTION DEPLOYMENT ==="
+          echo "Version: ${{ needs.check-ci-status.outputs.commit }}"
+          echo "Deployed by: ${{ github.actor }}"
+
+          BACKUP_DIR=~/system-monitor-backups/$(date +%Y%m%d_%H%M%S)
+          mkdir -p "$BACKUP_DIR"
+
+          mkdir -p ~/system-monitor
+          cd ~/system-monitor
+
+          if [ -f docker-compose.yml ]; then
+            cp docker-compose.yml "$BACKUP_DIR/"
+            echo "Configuration backed up to $BACKUP_DIR"
+          fi
+
+          echo "Downloading docker-compose.yml..."
+          curl -fsSL -o docker-compose.yml \
+            https://raw.githubusercontent.com/${{ github.repository }}/main/docker-compose.yml
+
+          echo ${{ secrets.DOCKER_PASSWORD }} | docker login -u ${{ secrets.DOCKER_USERNAME }} --password-stdin
+
+          docker-compose down || true
+
+          export TAG=${{ needs.check-ci-status.outputs.commit }}
+          export DOCKER_IMAGE=${{ secrets.DOCKER_USERNAME }}/system-monitor
+          echo "Pulling image tag: $TAG"
+          docker-compose pull
+
+          echo "Starting container..."
+          docker-compose up -d
+
+          docker image prune -f
+
+          cat > "$BACKUP_DIR/deploy-info.txt" << EOF
+          Version:    ${{ needs.check-ci-status.outputs.commit }}
+          Deployed by: ${{ github.actor }}
+          Date:       $(date)
+          Workflow:   ${{ github.run_id }}
+          EOF
+
+          echo "=== DEPLOYMENT COMPLETE ==="
+
+  health-check:
+    needs: [check-ci-status, deploy]
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    permissions:
+      contents: read
+      deployments: write
+    outputs:
+      status: ${{ steps.health-check-status.outputs.status }}
+
+    steps:
+    - name: Health Check
+      id: health-check
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.VPS_HOST_PROD }}
+        username: ${{ secrets.VPS_USERNAME_PROD }}
+        password: ${{ secrets.VPS_PASSWORD_PROD }}
+        script: |
+          set -e
+
           echo "==================================="
           echo "STARTING HEALTH CHECK"
+          echo "Version: ${{ needs.check-ci-status.outputs.commit }}"
           echo "==================================="
-          echo "Version: ${{ needs.deploy.outputs.commit }}"
-          
-          # 1. Проверка запущен ли контейнер
+
           echo ""
           echo "1. Checking container status..."
           if docker ps | grep -q system-monitor; then
@@ -199,138 +183,82 @@ jobs:
             docker ps -a | grep system-monitor || true
             exit 1
           fi
-          
-          # 2. Проверка времени работы (uptime)
+
           echo ""
           echo "2. Checking uptime..."
           UPTIME=$(docker inspect --format='{{.State.StartedAt}}' system-monitor 2>/dev/null)
-          if [ $? -eq 0 ]; then
-            echo "Container started at: $UPTIME"
-            
-            # Проверяем что контейнер работает не менее 5 секунд
-            START_TIME=$(date -d "$UPTIME" +%s)
-            CURRENT_TIME=$(date +%s)
-            RUNTIME=$((CURRENT_TIME - START_TIME))
-            
-            if [ $RUNTIME -gt 5 ]; then
-              echo "Container has been running for $RUNTIME seconds"
-            else
-              echo "Container just started ($RUNTIME seconds ago), waiting a bit..."
-              sleep 5
-            fi
+          START_TIME=$(date -d "$UPTIME" +%s)
+          CURRENT_TIME=$(date +%s)
+          RUNTIME=$((CURRENT_TIME - START_TIME))
+
+          if [ "$RUNTIME" -gt 5 ]; then
+            echo "Container has been running for $RUNTIME seconds"
           else
-            echo "Failed to get container uptime"
-            exit 1
+            echo "Container just started ($RUNTIME seconds ago), waiting..."
+            sleep 5
           fi
-          
-          # 3. Проверка использования ресурсов
+
           echo ""
           echo "3. Checking resource usage..."
-          
-          # Получаем использование памяти
-          MEM_USAGE=$(docker stats system-monitor --no-stream --format "{{.MemUsage}}" 2>/dev/null)
-          if [ $? -eq 0 ]; then
-            echo "Memory usage: $MEM_USAGE"
-          else
-            echo "Could not get memory usage"
-          fi
-          
-          # Получаем использование CPU
-          CPU_USAGE=$(docker stats system-monitor --no-stream --format "{{.CPUPerc}}" 2>/dev/null)
-          if [ $? -eq 0 ]; then
-            echo "CPU usage: $CPU_USAGE"
-          else
-            echo "Could not get CPU usage"
-          fi
-          
-          # 4. Проверка что приложение действительно работает
+          docker stats system-monitor --no-stream --format \
+            "Memory: {{.MemUsage}}  CPU: {{.CPUPerc}}" 2>/dev/null || echo "Could not get stats"
+
           echo ""
-          echo "4. Testing application functionality..."
-          
-          # Проверяем что процесс внутри контейнера жив
+          echo "4. Testing application process..."
           if docker exec system-monitor ps aux 2>/dev/null | grep -q "system_monitor"; then
-            echo "Application process is running inside container"
+            echo "Application process is running"
           else
-            # Пробуем альтернативный способ
-            if docker exec system-monitor sh -c "ls -la /usr/local/bin/ 2>/dev/null | grep -q system_monitor"; then
-              echo "Application binary exists but process may not be running"
-              docker exec system-monitor ps aux 2>/dev/null || echo "Cannot list processes"
-            else
+            echo "Application binary check..."
+            docker exec system-monitor ls -la /usr/local/bin/system_monitor 2>/dev/null || {
               echo "Application binary not found"
               exit 1
-            fi
+            }
           fi
-          
-          # 5. Проверка логов на наличие ошибок
+
           echo ""
           echo "5. Checking logs for errors..."
-          ERROR_COUNT=$(docker logs --tail 50 system-monitor 2>&1 | grep -i "error\|fatal\|panic" | grep -v "warn" | wc -l)
-          
-          if [ $ERROR_COUNT -eq 0 ]; then
+          ERROR_COUNT=$(docker logs --tail 50 system-monitor 2>&1 \
+            | grep -iE "error|fatal|panic" | grep -iv "warn" | wc -l)
+          if [ "$ERROR_COUNT" -eq 0 ]; then
             echo "No errors found in logs"
           else
-            echo "Found $ERROR_COUNT potential issues in logs:"
-            docker logs --tail 20 system-monitor 2>&1 | grep -i "error\|fatal\|panic" || true
+            echo "Found $ERROR_COUNT potential issues:"
+            docker logs --tail 20 system-monitor 2>&1 | grep -iE "error|fatal|panic" || true
           fi
-          
-          # Финальный вердикт
+
           echo ""
           echo "==================================="
           echo "HEALTH CHECK PASSED"
-          echo "==================================="
-          echo "Container: system-monitor"
-          echo "Version: ${{ needs.deploy.outputs.commit }}"
+          echo "Version: ${{ needs.check-ci-status.outputs.commit }}"
           echo "Completed: $(date)"
-      
+          echo "==================================="
+
     - name: Set health check status
       id: health-check-status
       run: |
         echo "status=success" >> $GITHUB_OUTPUT
-        echo "Health check completed successfully"
 
   create-deployment-record:
-    needs: health-check
+    needs: [check-ci-status, health-check]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       deployments: write
     if: success()
-    
+
     steps:
-    - name: Get commit from deploy job
-      id: get-commit
-      run: |
-        # Получаем commit из предыдущей job через needs
-        COMMIT="${{ needs.deploy.outputs.commit }}"
-        
-        # Если пустой, пробуем получить из check-ci-status
-        if [ -z "$COMMIT" ]; then
-          COMMIT="${{ needs.check-ci-status.outputs.commit }}"
-        fi
-        
-        # Если все еще пустой, получаем последний коммит из main
-        if [ -z "$COMMIT" ]; then
-          git clone --depth 1 https://github.com/${{ github.repository }}.git temp-repo
-          cd temp-repo
-          COMMIT=$(git rev-parse origin/main)
-          cd .. && rm -rf temp-repo
-        fi
-        
-        echo "commit=$COMMIT" >> $GITHUB_OUTPUT
-        echo "Using commit: $COMMIT"
-    
     - name: Create GitHub Deployment
       uses: actions/github-script@v7
       with:
         script: |
-          const commit = '${{ steps.get-commit.outputs.commit }}';
-          
+          const commit = '${{ needs.check-ci-status.outputs.commit }}';
+
           if (!commit) {
             throw new Error('Commit hash is empty!');
           }
-          
+
           console.log(`Creating deployment for commit: ${commit}`);
-          
+
           await github.rest.repos.createDeployment({
             owner: context.repo.owner,
             repo: context.repo.repo,
@@ -338,12 +266,12 @@ jobs:
             environment: 'production',
             required_contexts: [],
             auto_merge: false,
-            description: `Deployed version ${commit} with health check passed`
+            description: `Deployed ${commit} — health check passed`
           });
-          
-    - name: Deployment Success Notification
+
+    - name: Deployment success notification
       run: |
         echo "Production deployment completed successfully!"
-        echo "Version: ${{ steps.get-commit.outputs.commit }}"
+        echo "Version: ${{ needs.check-ci-status.outputs.commit }}"
         echo "Health check: PASSED"
         echo "Deployment record created in GitHub"

@@ -20,8 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       build-status: ${{ job.status }}
-      cache-key: ${{ steps.cache.outputs.cache-key }}
-    
+      cache-key: ${{ steps.cache-key.outputs.key }}
+
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -34,17 +34,14 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update -qq
-        sudo apt-get install -y \
+        sudo apt-get install -y --no-install-recommends \
           build-essential cmake g++ make
 
     - name: Cache CMake build
       id: cache
       uses: actions/cache@v4
       with:
-        path: |
-          build/
-          !build/**/*.o
-          !build/**/*.tmp
+        path: build/
         key: ${{ steps.cache-key.outputs.key }}
 
     - name: Configure CMake
@@ -63,18 +60,15 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: build-artifacts
-        path: |
-          build/
-          !build/**/*.o
-          !build/**/*.tmp
+        path: build/
         retention-days: 1
         compression-level: 6
+
   # UNIT TESTS
   test:
     needs: build
     runs-on: ubuntu-latest
-    if: needs.build.outputs.build-status == 'success'
-    
+
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -99,7 +93,7 @@ jobs:
         path: build/Testing/
         retention-days: 7
 
-  # DOCKER BUILD
+  # DOCKER BUILD (multi-arch, single job via Buildx)
   docker:
     if: github.ref == 'refs/heads/main'
     needs: [build, test]
@@ -108,19 +102,12 @@ jobs:
       packages: write
       contents: read
 
-    strategy:
-      matrix:
-        platforms: [linux/amd64, linux/arm64]
-    
     steps:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Download artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: build-artifacts
-        path: build/
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
@@ -135,7 +122,7 @@ jobs:
       uses: docker/build-push-action@v6
       with:
         context: .
-        platforms: ${{ matrix.platforms }}
+        platforms: linux/amd64,linux/arm64
         push: true
         tags: |
           ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
@@ -143,9 +130,9 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
-    - name: Run image smoke test
+    - name: Smoke test (amd64)
       run: |
-        docker run --rm --platform ${{ matrix.platforms }} \
+        docker run --rm --platform linux/amd64 \
           ${{ env.DOCKER_IMAGE }}:${{ github.sha }} --help
 
   # SECURITY SCAN
@@ -159,7 +146,7 @@ jobs:
       uses: actions/checkout@v4
 
     - name: Run Trivy vulnerability scanner
-      uses: aquasecurity/trivy-action@master
+      uses: aquasecurity/trivy-action@0.28.0
       with:
         scan-type: 'fs'
         format: 'sarif'
