@@ -32,15 +32,15 @@
 ```
 .
 ├── src/
-│   ├── core/               # Класс SystemMonitor — чтение /proc
-│   ├── utils/              # Вспомогательные утилиты
+│   ├── core/                   # Класс SystemMonitor — чтение /proc
+│   ├── utils/                  # Вспомогательные утилиты
 │   └── main.cpp
-├── tests/                  # Google Test юнит-тесты
+├── tests/                      # Google Test юнит-тесты
 ├── .github/workflows/
-│   ├── ci.yaml             # Build → Test → Docker → Security
+│   ├── ci.yaml                 # Build → Test → Docker → Security
 │   └── deploy-production.yaml  # Ручной деплой на VPS
-├── dockerfile              # Multi-stage сборка
-└── docker-compose.yml      # Запуск на сервере
+├── dockerfile                  # Multi-stage сборка
+└── docker-compose.yml          # Запуск на сервере
 ```
 
 ## Что делает приложение
